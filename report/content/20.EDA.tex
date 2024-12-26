@@ -1,0 +1,21 @@
+\begin{table}[h]
+    \centering
+    \input{content/21.general.variables.table}
+    
+    \raggedleft {\tiny (*) before NA exclusion}
+    
+    \vspace{4pt}
+    \caption{Dataset features}
+\end{table}
+
+\section{Exploratory Data Analysis}
+\input{content/21.general}
+
+\subsection{Categorical variables}
+\input{content/22.categorical}
+
+\subsection{Numerical variables}
+\input{content/23.numerical}
+
+\subsection{Conclusion}
+The dataset is a cleaned, 300-record dataset that shows the relationship between demographical and clinical features and the presence of heart disease. A combination of numerical and categorical variables are featured in this dataset, and whilst most features have strong correlation with the response variable, some features seem to be a weak predictor to heart disease (such as \texttt{fbs}, \texttt{bp} or \texttt{chol}). In further sections, models with or without this set of features will be tested against each other.

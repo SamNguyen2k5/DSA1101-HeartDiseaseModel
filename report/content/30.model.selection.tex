@@ -1,0 +1,14 @@
+\section{Model Selection}
+
+This report proposes the use of three families of models, \textit{\( k \)-Nearest neighbours, Decision trees and Logistic Regression}, in predicting the presence of disease through clinical measures. For each family of model, a range of hyperparameters are validated via \( 5 \)-fold cross-validation to choose the best candidate. Sensitivity (or True positive rate / TPR) is used as a reference to select the best performing model, with a caution that a high TPR needs not translate to good performance but rather due to underfitting, as the `True' label would be predicted at a impractical high probability.
+
+To ease the fine-tuning process, a default of threshold of \( \delta = 0.5 \) is maintained throughout all models.
+
+\subsection{\( k \)-Nearest neighbours (\( k \)-NN)}
+\input{content/31.kNN.tex}
+
+\subsection{Decision tree}
+\input{content/32.trees.tex}
+
+\subsection{Logistic regression}
+\input{content/33.logistic.tex}

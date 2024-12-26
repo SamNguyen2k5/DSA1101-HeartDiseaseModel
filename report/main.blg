@@ -1,0 +1,48 @@
+This is BibTeX, Version 0.99d (TeX Live 2023)
+Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
+The top-level auxiliary file: main.aux
+The style file: ifacconf.bst
+Database file #1: bbtex.bib
+Warning--can't use both author and editor fields in fishertest
+You've used 3 entries,
+            2921 wiz_defined-function locations,
+            614 strings with 5248 characters,
+and the built_in function-call counts, 1469 in all, are:
+= -- 122
+> -- 40
+< -- 3
++ -- 17
+- -- 12
+* -- 94
+:= -- 239
+add.period$ -- 11
+call.type$ -- 3
+change.case$ -- 18
+chr.to.int$ -- 3
+cite$ -- 4
+duplicate$ -- 112
+empty$ -- 120
+format.name$ -- 19
+if$ -- 285
+int.to.chr$ -- 1
+int.to.str$ -- 1
+missing$ -- 23
+newline$ -- 26
+num.names$ -- 12
+pop$ -- 45
+preamble$ -- 1
+purify$ -- 16
+quote$ -- 0
+skip$ -- 43
+stack$ -- 0
+substring$ -- 60
+swap$ -- 54
+text.length$ -- 0
+text.prefix$ -- 0
+top$ -- 0
+type$ -- 24
+warning$ -- 1
+while$ -- 11
+width$ -- 0
+write$ -- 49
+(There was 1 warning)

@@ -1,0 +1,56 @@
+\documentclass{ifacconf}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{booktabs} 
+\usepackage{setspace} 
+\usepackage{tablefootnote}
+\usepackage{float}
+
+\usepackage{graphicx}      % include this line if your document contains figures
+\usepackage{natbib}        % required for bibliography
+% \bibliographystyle{IEEEtranS}
+% \bibliographystyle{ifacconf}
+
+\graphicspath{{../figures}}
+
+%===============================================================================
+\begin{document}
+\setstretch{1.0}
+
+\begin{frontmatter}
+
+\title{Projecting presence of heart disease from clinical measures with statistical models}
+% Title, preferably not more than 10 words.
+
+\author{Nguyen Hoang The Kiet} 
+
+\address{Bachelor Student in Data Science and Analytics, College of Humanities and Science, National University of Singapore (Email: e1375598@u.nus.edu).}
+
+% \begin{abstract}                % Abstract of not more than 250 words.
+% This article proposes to obtain a statistical model of the daily peak electricity load  of a household located in Austin-TX,USA. The Box-Jenkins methodology was followed to obtain the best fit for the time-series. Four models provided a good fit: ARIMA(0,1,2),  ARIMA(1,1,2), SARIMA(0,1,2)(0,1,1) and SARIMA(1,1,2)(0,1,1). The model with the highest Akaike Information Criteria was the ARIMA(1,2,2). However, the model with the highest forecast accuracy was the SARIMA(1,1,2)(0,1,1), which obtained an RMSE of 0.296 and a MAPE Of 15.00.
+
+% \end{abstract}
+
+\begin{keyword}
+Statistical Modeling, Feature Extraction, \( k \)-NN, Decision Tree, Logistic Regression
+\end{keyword}
+
+\end{frontmatter}
+%===============================================================================
+
+\input{content/10.introduction}
+\input{content/20.EDA}
+\input{content/30.model.selection.tex}
+\input{content/40.model.comparison.tex}
+\input{content/50.conclusion.tex}
+
+\nocite{*}
+\setlength{\bibsep}{10pt}
+\bibliography{bbtex.bib}  
+
+% bib file to produce the bibliography                                                  
+
+\end{document}

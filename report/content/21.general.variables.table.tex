@@ -1,0 +1,97 @@
+\begin{tabular}{lllr}
+    \toprule
+    \textbf{feature} 
+        & \textbf{type}
+        & \textbf{description}
+        & \textbf{NA}
+        \\
+    \midrule
+    sex 
+        & \texttt{fct(2)}
+        & demographical
+        & 0
+        \\ 
+    \midrule
+    chest.pain 
+        & \texttt{fct(4)}
+        & clinical
+        & 0
+        \\
+    \midrule
+    fbs 
+        & \texttt{fct(2)}
+        & clinical
+        & 0
+        \\
+    \midrule
+    rest.ecg 
+        & \texttt{fct(3)}
+        & clinical
+        & 0
+        \\
+    \midrule
+    angina 
+        & \texttt{fct(2)}
+        & clinical
+        & 0
+        \\
+    \midrule
+    blood.disorder 
+        & \texttt{fct(3)}
+        & clinical
+        & {\color{red} 2}
+        \\
+    \midrule
+    age 
+        & \texttt{int}
+        & demographical
+        & 0
+        \\
+    \midrule
+    bp 
+        & \texttt{int}
+        & clinical
+        & 0
+        \\
+    \midrule
+    chol 
+        & \texttt{int}
+        & clinical
+        & 0
+        \\
+    \midrule
+    heart.rate 
+        & \texttt{int}
+        & clinical
+        & 0
+        \\
+    \midrule
+    vessels 
+        % & \texttt{\color{red} int/fct(4)}
+        & \texttt{int}
+        & clinical
+        & 0
+
+        \\
+    \midrule
+    st.depression 
+        & \texttt{dbl}
+        & clinical
+        & 0
+        \\
+    \bottomrule
+    \toprule
+    \textbf{response} 
+        & \textbf{type}
+        & \textbf{value}
+        & \textbf{count}
+        \\
+    \midrule
+    \multirow{2}{*}{disease}
+        & \multirow{2}{*}{\texttt{fct(2)}}
+        & 0 (absence) & 138*
+        \\
+        && 1 (presence) & 162*
+        \\
+    \bottomrule
+\end{tabular}

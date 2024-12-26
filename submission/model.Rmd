@@ -1,0 +1,1045 @@
+---
+title: "Model testing"
+output:
+  pdf_document: default
+  html_document: 
+    df_print: kable
+  html_notebook: default
+---
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(latex2exp)
+
+library(class)
+library(caret)
+library(rpart)
+library(rpart.plot)
+
+library(ROCR)
+
+set.seed(1101)
+
+.save_and_display <- function(g, main, file, width = 960, height = 480, ...) {
+    g <- g +
+        ggtitle(main) +
+        theme(
+            text = element_text(size = 12),
+            plot.title = element_text(hjust = 0.5, size = 16),
+            strip.text = element_text(size = 12),
+            # legend.position="bottom"
+        )
+    
+    ggsave(file, plot = g, units = 'px', width = width, height = height, dpi = 100, ...)
+    g
+}
+
+```
+
+# Input dataframe
+
+```{r}
+df <- read.csv('heart-disease-dsa1101.csv')
+
+CATEGORICAL_VARIABLES <- c(
+    'sex',
+    'chest.pain',
+    'fbs',
+    'rest.ecg',
+    'angina',
+    'blood.disorder'
+)
+
+RESPONSE <- 'disease'
+
+NUMERICAL_VARAIBLES <- c(
+    'age',
+    'bp',
+    'chol',
+    'heart.rate',
+    'st.depression',
+    'vessels' 
+    # 'vessels' is a discrete small variable from raning from 0-4
+)
+
+df <- df %>%
+    filter(blood.disorder != 0) %>%
+    mutate_at(all_of(c(CATEGORICAL_VARIABLES, RESPONSE)), as.factor)
+
+str(df)
+```
+# Dummy categorical variables
+
+```{r}
+.dummies <- function(df, col) {
+    df_col <- df %>%
+        select(all_of(col)) %>% pull() 
+    
+    lvls <- levels(df_col)
+    dummy_cols <- paste(col, lvls, sep='.')
+    
+    dummies <- lvls %>% sapply(function(lvl) { as.numeric(df_col == lvl) }) %>%
+        data.frame()
+    
+    colnames(dummies) <- dummy_cols
+    dummies
+}
+
+.mutate_dummies <- function(df, cols) {
+    for (col in cols)
+        df <- cbind(df, .dummies(df, col))
+    select(df, -all_of(cols))
+}
+```
+
+# Data normalisation / standardisation
+
+```{r}
+.minmaxscale <- function(xs) {
+    min.xs <- min(xs)
+    max.xs <- max(xs)
+    (xs - min.xs) / (max.xs - min.xs)
+}
+
+.boxcox <- function(xs, LAMBDA = 0) {
+    sapply(xs, function(x) {
+        if (LAMBDA == 0)
+            return (log(x))
+        return (x ** LAMBDA - 1) / LAMBDA
+    })
+}
+
+.mutate_boxcox <- function(df) {
+    df %>%
+        mutate(age        = .boxcox(age,         1.505)) %>%
+        mutate(bp         = .boxcox(bp,         -0.645)) %>%
+        mutate(chol       = .boxcox(chol,       -0.125)) %>%
+        mutate(heart.rate = .boxcox(heart.rate,  2.345))
+}
+```
+
+# 5-fold cross validation set-up
+
+```{r}
+.n_folds = 5
+.folds = sample(1:.n_folds, nrow(df), replace=TRUE)
+
+.predict.fold <- function(fold, pipe, df) {
+    ids <- which(.folds == fold)
+    train <- df[-ids,]
+    test  <- df[ ids,]
+    tmp <- pipe(train, test)
+    y_pred <- tmp$result
+    y_test <- select(test, all_of(RESPONSE)) %>% pull() %>% 
+        as.character() %>% as.numeric()
+    list(y_pred = y_pred, y_test = y_test)
+}
+    
+.cv <- function(pipe, df) {
+    evals <- 1:.n_folds %>%
+        as.list() %>%
+        lapply(.predict.fold, pipe, df) %>% 
+        transpose()
+    prediction(evals$y_pred, evals$y_test)
+}
+
+.all <- function(pipe, df) {
+    y_pred <- pipe(df, df)$result
+    y_test <- select(df, all_of(RESPONSE)) %>% pull() %>% 
+        as.character() %>% as.numeric()
+    prediction(y_pred, y_test)
+}
+
+.predict.all    <- \(params, model, df) params %>% lapply(model) %>% lapply(.all, df)
+.predict.all.cv <- \(params, model, df) params %>% lapply(model) %>% lapply(.cv,  df)
+
+.single.metric <- function(preds, measure) {
+    preds %>%
+        lapply(performance, measure = measure) %>%
+        lapply(\(pref) 
+            pref@y.values %>%
+            lapply(median) %>% unlist() %>% mean()
+        ) %>% unlist()
+}
+```
+
+# k-NN
+
+```{r}
+.mutate_all_numeric <- function(df) {
+    df %>% 
+        # mutate(blood.disorder = factor(blood.disorder, levels=c(1, 2, 3), labels = c(1, 3, 2))) %>%
+        mutate(across(everything(), \(x) as.double(as.character(x))))
+}
+
+NOMINAL_VARIABLES <- c(
+    # 'rest.ecg',
+    # 'blood.disorder'
+    # 'chest.pain'
+)
+
+df_knn <- df %>%
+    # .mutate_dummies(NOMINAL_VARIABLES) %>%
+    .mutate_all_numeric()
+
+df_knn_scaled_boxcox <- df %>%
+    # .mutate_dummies(NOMINAL_VARIABLES) %>%
+    .mutate_all_numeric() %>%
+    .mutate_boxcox() %>% 
+    mutate(across(-all_of(RESPONSE), scale))
+
+df_knn_scaled <- df %>%
+    # .mutate_dummies(NOMINAL_VARIABLES) %>%
+    .mutate_all_numeric() %>%
+    mutate(across(-all_of(RESPONSE), scale))
+
+df_knn_normalised <- df %>%
+    # .mutate_dummies(NOMINAL_VARIABLES) %>%
+    .mutate_all_numeric() %>%
+    mutate(across(-all_of(RESPONSE), .minmaxscale))
+```
+
+```{r}
+knn.pipe <- function(k, prob=FALSE, excludes=character(0)) {
+    function(train, test) {
+        X_train <- train %>% select(-all_of(RESPONSE), -all_of(excludes))
+        X_test  <- test  %>% select(-all_of(RESPONSE), -all_of(excludes))
+        y_train <- train %>% select( all_of(RESPONSE)) |> pull()
+        y_pred <- knn(X_train, X_test, y_train, k, prob=TRUE) 
+        
+        y <- y_pred %>% as.character() %>% as.numeric()
+        if (prob) {
+            p <- attr(y_pred, 'prob')
+            result <- y * p + (1 - y) * (1 - p)
+        } else { result <- y }
+        
+        list(result = result, model = k)
+    }
+}
+
+knn.model            <- \(k, prob=FALSE) knn.pipe(k, prob)
+knn.model.simplified <- \(k, prob=FALSE) knn.pipe(k, prob, excludes=c('fbs', 'bp', 'chol'))
+knn.ks <- seq(3, 50, 1)
+
+knn.preds.scaled        <- .predict.all.cv(knn.ks, knn.model, df_knn_scaled)
+knn.preds.normalised    <- .predict.all.cv(knn.ks, knn.model, df_knn_normalised)
+knn.preds.scaled.boxcox <- .predict.all.cv(knn.ks, knn.model, df_knn_scaled_boxcox)
+
+knn.preds.scaled.simplified        <- .predict.all.cv(knn.ks, knn.model.simplified, df_knn_scaled)
+knn.preds.normalised.simplified    <- .predict.all.cv(knn.ks, knn.model.simplified, df_knn_normalised)
+knn.preds.scaled.boxcox.simplified <- .predict.all.cv(knn.ks, knn.model.simplified, df_knn_scaled_boxcox)
+
+knn.tprs.scaled        <- knn.preds.scaled        %>% .single.metric('tpr')
+knn.tprs.normalised    <- knn.preds.normalised    %>% .single.metric('tpr')
+knn.tprs.scaled.boxcox <- knn.preds.scaled.boxcox %>% .single.metric('tpr')
+knn.tprs.scaled.simplified        <- knn.preds.scaled.simplified        %>% .single.metric('tpr')
+knn.tprs.normalised.simplified    <- knn.preds.normalised.simplified    %>% .single.metric('tpr')
+knn.tprs.scaled.boxcox.simplified <- knn.preds.scaled.boxcox.simplified %>% .single.metric('tpr')
+
+knn.metrics <- data.frame(
+    k = knn.ks,
+     # TPR.scaled            =        knn.tprs.scaled,
+    # CTPR.scaled            = cummax(knn.tprs.scaled),
+     TPR.normalised        =        knn.tprs.normalised,
+    CTPR.normalised        = cummax(knn.tprs.normalised),
+     TPR.scaled_boxcox     =        knn.tprs.scaled.boxcox,
+    CTPR.scaled_boxcox     = cummax(knn.tprs.scaled.boxcox),
+    #  TPR.scaled_sim        =        knn.tprs.scaled.simplified,
+    # CTPR.scaled_sim        = cummax(knn.tprs.scaled.simplified),
+     TPR.normalised_sim    =        knn.tprs.normalised.simplified,
+    CTPR.normalised_sim    = cummax(knn.tprs.normalised.simplified),
+     TPR.scaled_boxcox_sim =        knn.tprs.scaled.boxcox.simplified,
+    CTPR.scaled_boxcox_sim = cummax(knn.tprs.scaled.boxcox.simplified)
+) %>% 
+    pivot_longer(
+        cols = starts_with(c('TPR', 'CTPR')),
+        names_to = 'metric',
+        values_to = 'value'
+    ) %>%
+    mutate(transformation = gsub('.*\\.', '', metric)) %>%
+    mutate(metric = gsub('\\..*', '', metric))
+
+BEST.K <- 19
+BEST.MODEL <- knn.metrics %>% filter(
+    # transformation == 'scaled_boxcox_sim',
+    metric == 'CTPR', k == BEST.K
+)
+BEST.MODEL
+
+(knn.metrics %>% 
+    ggplot(aes(x = k, y = value, col = transformation)) + 
+        geom_point(
+            data = BEST.MODEL,
+            size = 3.1
+        ) +
+        geom_line(
+            data = filter(knn.metrics, metric == 'CTPR', !(transformation %>% endsWith('_sim'))),
+            size = 1.0,
+            position=position_jitter(w=0.02, h=0.0005)
+        ) +
+        geom_line(
+            data = filter(knn.metrics, metric == 'CTPR', transformation %>% endsWith('_sim')),
+            size = 1.2,
+            linetype = 'dashed',
+            position=position_jitter(w=0.02, h=0.0005)
+        ) + 
+        labs(
+            x = 'k',
+            y = 'Cummulative TPR',
+            col = 'Model'
+        ) +
+        # scale_alpha_manual(
+        #     labels = c('TPR', 'Cummulative TPR'),
+        #     breaks = c('TPR', 'CTPR'),
+        #     values = c(0.6, 1.0)
+        # ) +
+        # scale_size_manual(
+        #     breaks = c('TPR', 'CTPR'),
+        #     values = c(0.3, 1.2)
+        # ) + 
+        scale_color_manual(
+            breaks = c(
+                'normalised', 'normalised_sim', 
+                # 'scaled', 'scaled_sim'
+                'scaled_boxcox', 'scaled_boxcox_sim'
+            ),
+            labels = c(
+                'Normalisation', 'Normalisation (Simplified)', 
+                # 'Standardisation', 'Standardisation (Simplified)'
+                'Box-Cox + Standardisation', 'Box-Cox + Standardisation (Simplified)'
+            ),
+            values=c(
+                '#316819', '#57d81f', 
+                # '#d76f24', '#eec666', 
+                '#b31013', '#ee3532'
+            )
+        ) +
+        geom_text(
+            data = BEST.MODEL,
+            aes(
+                x = k, 
+                y = value,
+                col = transformation,
+                label = paste0('TPR = ', (value * 100) %>% round(3), '%'),
+            ),
+            hjust = -0.05, 
+            vjust = 1.5, 
+            text=element_text(size=11)
+        ) +
+        geom_vline(
+            data = BEST.MODEL,
+            aes(xintercept = k),
+            col = 'black',
+            linetype = 'dotted'
+        ) +
+        geom_text(
+            data = BEST.MODEL,
+            aes(
+                x = k, 
+                y = 0.825,
+                label = paste0('k = ', k)
+            ),
+            col = 'black',
+            hjust = -0.05, 
+            vjust = 1.5, 
+            text=element_text(size=11)
+        ) +
+        theme(
+            legend.position = 'inside', 
+            # legend.direction = 'horizontal',
+            legend.box = 'horizontal',
+            legend.box.just = 'right',
+            legend.justification = c('right', 'bottom'),
+            legend.background = element_blank()
+        )) %>%
+        .save_and_display(
+            'Performance of k-Nearest Neighbours: TPR vs k',
+            '../figures/31.kNN.pdf'
+        )
+```
+
+
+
+
+# Logistic Regression
+
+```{r}
+df_lr <- df 
+df_lr_scaled <- df %>%
+    .mutate_boxcox() %>% 
+    mutate(across(all_of(NUMERICAL_VARAIBLES), scale))
+```
+
+```{r}
+model <- glm(disease ~ ., df_lr, family = binomial(link = "logit"))
+model_scaled <- glm(disease ~ ., df_lr_scaled, family = binomial(link = "logit")) 
+
+p.value.model <- coef(summary(model))[,'Pr(>|z|)']
+p.value.model_scaled <- coef(summary(model_scaled))[,'Pr(>|z|)']
+
+cbind(
+    p.value.model, 
+    p.value.model_scaled
+)
+```
+
+```{r}
+lr.pipe <- function(params, prob=TRUE, excludes=character(0), tree.parms = list()) {
+    if (!prob) { throw('For Logistic Regression, prob must be TRUE!') }
+    
+    function(train, test, ...) {
+        train <- train %>% select(-all_of(excludes))
+        test  <- test  %>% select(-all_of(excludes))
+        
+        model <- glm(disease ~ ., train, 
+                     family = binomial(link = 'logit'))
+        
+        list(
+            result = model %>% predict(newdata = test, type = 'response'), 
+            model = model
+        )
+    }
+}
+
+lr.model   <- \(...) lr.pipe()
+lr.model.1 <- \(...) lr.pipe(excludes=c('fbs', 'bp', 'chol'))
+lr.model.2 <- \(...) lr.pipe(excludes=c('fbs', 'bp', 'chol'))
+
+lr.preds   <- .predict.all(list(1), lr.model,   df_lr)
+lr.preds.1 <- .predict.all(list(1), lr.model.1, df_lr)
+lr.preds.2 <- .predict.all(list(1), lr.model.2, df_lr_scaled)
+
+lr.preds
+
+lr.tprs   <- lr.preds   %>% lapply(performance, 'tpr', 'fpr')
+lr.tprs.1 <- lr.preds.1 %>% lapply(performance, 'tpr', 'fpr')
+lr.tprs.2 <- lr.preds.2 %>% lapply(performance, 'tpr', 'fpr')
+
+lr.auc   <- lr.preds   %>% lapply(performance, 'auc')
+lr.auc.1 <- lr.preds.1 %>% lapply(performance, 'auc')
+lr.auc.2 <- lr.preds.2 %>% lapply(performance, 'auc')
+
+.lr.tprs.df <- function(tprs, name=NULL) {
+    x <- tprs[[1]]@x.values[[1]]
+    y <- tprs[[1]]@y.values[[1]]
+    
+    data.frame(
+        # cutoff = x,
+        FPR = x, TPR = y, name = name
+    )
+}
+
+.lr.aucs.df <- \(aucs, name=NULL) data.frame(AUC = aucs[[1]]@y.values[[1]], name = name)
+
+lr.metrics <- .lr.tprs.df(lr.tprs,   name='full') %>% 
+    # full_join(.lr.tprs.df(lr.tprs.1, name='simp')) %>%
+    full_join(.lr.tprs.df(lr.tprs.2, name='sim_scaled'))
+
+lr.metrics.aucs <- .lr.aucs.df(lr.auc,   name='full') %>% 
+    # full_join(.lr.aucs.df(lr.auc.1, name='simp')) %>%
+    full_join(.lr.aucs.df(lr.auc.2, name='sim_scaled'))
+
+(lr.metrics %>%
+    ggplot(aes(x = FPR, y = TPR, col = name)) + 
+        geom_line(
+            data = filter(lr.metrics, name == 'full'),
+            size = 1.0
+        ) +
+        geom_line(
+            data = filter(lr.metrics, name == 'sim_scaled'),
+            size = 1.2,
+            linetype = 'dashed'
+        ) +
+        labs(
+            # x = 'Cutoff',
+            x = 'FPR',
+            y = 'TPR',
+            col = 'Model'
+        ) +
+        scale_color_manual(
+            breaks = c('full', 'simp', 'sim_scaled'), 
+            labels = c('Full', 'Simplified', 'Simplified + Boxcox + Standardisation'),
+            values=c('#4a2574', '#ffffff', '#de72f3')
+        ) +
+        theme(
+            # legend.position = 'inside', 
+            # legend.direction = 'horizontal',
+            legend.box = 'horizontal',
+            legend.box.just = 'right',
+            legend.justification = c('left', 'bottom'),
+            legend.background = element_blank()
+        )
+    
+) %>%
+    .save_and_display(
+        'Logistic Regression: FPR vs TPR',
+        '../figures/33.LogisticRegression.pdf'
+    )
+```
+
+```{r}
+lr.best.model <- lr.model()(df_lr_scaled, df_lr_scaled)$model
+summary(lr.best.model)
+
+coef(summary(lr.best.model))[,c('Estimate', 'Pr(>|z|)')] %>% data.frame() %>%
+    mutate(abs_est = -abs(Estimate)) %>% 
+    arrange(order_by = abs_est) %>% 
+    select(-abs_est) %>%
+    mutate(Estimate = round(Estimate, 2)) 
+
+# %>%
+#     knitr::kable(format = 'latex') %>%
+#     writeLines()
+```
+
+# Decision Tree
+
+```{r}
+tree.pipe <- function(params, prob=FALSE, excludes=character(0), tree.parms = list()) {
+    function(train, test, ...) {
+        train <- train %>% select(-all_of(excludes))
+        test  <- test  %>% select(-all_of(excludes))
+        
+        model <- rpart(
+            disease ~ ., train,
+            control = rpart.control %>% do.call(params),
+            parms = tree.parms
+        )
+        
+        if (prob)
+            list(
+                result = model %>% predict(newdata = test, type = 'vector'),
+                model = model
+            )
+        else
+            list(
+                result = model %>% predict(newdata = test, type = 'class') %>% 
+                    as.character() %>% as.numeric(),
+                model = model
+            )
+    }
+}
+
+tree.model.info     <- \(params, prob=FALSE) tree.pipe(
+    params, prob, tree.parms = list(split = 'information')
+)
+tree.model.info_sim <- \(params, prob=FALSE) tree.pipe(
+    params, prob, tree.parms = list(split = 'information'), excludes=c('fbs', 'bp', 'chol')
+)
+tree.model.gini     <- \(params, prob=FALSE) tree.pipe(
+    params, prob, tree.parms = list(split = 'gini')
+)
+tree.model.gini_sim <- \(params, prob=FALSE) tree.pipe(
+    params, prob, tree.parms = list(split = 'gini'), excludes=c('fbs', 'bp', 'chol')
+)
+
+tree.params.df <- expand.grid(minsplit = seq(5, 100, 5))
+# tree.params.df <- expand.grid(maxdepth = seq(2, 20, 1))
+tree.params    <- tree.params.df %>% as.list() %>% transpose()
+
+tree.preds.info     <- .predict.all.cv(tree.params, tree.model.info,     df)
+tree.preds.info_sim <- .predict.all.cv(tree.params, tree.model.info_sim, df)
+tree.preds.gini     <- .predict.all.cv(tree.params, tree.model.gini,     df)
+tree.preds.gini_sim <- .predict.all.cv(tree.params, tree.model.gini_sim, df)
+
+tree.tprs.info      <- tree.preds.info     %>% .single.metric('tpr')
+tree.tprs.info_sim  <- tree.preds.info_sim %>% .single.metric('tpr')
+tree.tprs.gini      <- tree.preds.gini     %>% .single.metric('tpr')
+tree.tprs.gini_sim  <- tree.preds.gini_sim %>% .single.metric('tpr')
+
+tree.fprs.info      <- tree.preds.info     %>% .single.metric('fpr')
+tree.fprs.info_sim  <- tree.preds.info_sim %>% .single.metric('fpr')
+tree.fprs.gini      <- tree.preds.gini     %>% .single.metric('fpr')
+tree.fprs.gini_sim  <- tree.preds.gini_sim %>% .single.metric('fpr')
+
+tree.metrics <- data.frame(
+    split = tree.params.df$minsplit,
+    # depth = tree.params.df$maxdepth,
+     TPR.info     =        tree.tprs.info,
+    CTPR.info     = cummax(tree.tprs.info),
+     TPR.info_sim =        tree.tprs.info_sim,
+    CTPR.info_sim = cummax(tree.tprs.info_sim),
+     TPR.gini     =        tree.tprs.gini,
+    CTPR.gini     = cummax(tree.tprs.gini),
+     TPR.gini_sim =        tree.tprs.gini_sim,
+    CTPR.gini_sim = cummax(tree.tprs.gini_sim),
+     FPR.info     =        tree.fprs.info,
+    CFPR.info     = cummax(tree.fprs.info),
+     FPR.info_sim =        tree.fprs.info_sim,
+    CFPR.info_sim = cummax(tree.fprs.info_sim),
+     FPR.gini     =        tree.fprs.gini,
+    CFPR.gini     = cummax(tree.fprs.gini),
+     FPR.gini_sim =        tree.fprs.gini_sim,
+    CFPR.gini_sim = cummax(tree.fprs.gini_sim)
+) %>% 
+    pivot_longer(
+        cols = starts_with(c('TPR', 'CTPR', 'FPR', 'CFPR')),
+        names_to = 'metric',
+        values_to = 'value'
+    ) %>%
+    mutate(transformation = gsub('.*\\.', '', metric)) %>%
+    mutate(metric = gsub('\\..*', '', metric)) %>%
+    mutate(generic_metric = metric %>% substr(nchar(.) - 2, nchar(.)))
+
+BEST.SPLIT <- c(30, 45, 60)
+BEST.MODEL <- tree.metrics %>% filter(
+    # transformation == 'scaled_boxcox_sim',
+    metric %in% c('CTPR', 'CFPR'), split %in% BEST.SPLIT, transformation != 'gini_sim'
+)
+BEST.MODEL
+
+(tree.metrics %>% 
+    ggplot(aes(x = split, y = value, col = transformation)) + 
+        facet_wrap(generic_metric ~ ., scales = 'free', nrow=2) +
+        geom_point(
+            data = BEST.MODEL,
+            size = 3.1
+        ) +
+        geom_line(
+            data = filter(tree.metrics, startsWith(metric, 'C'), !(transformation %>% endsWith('_sim'))),
+            size = 1.0,
+            position=position_jitter(w=0.02, h=0.0001)
+        ) +
+        geom_line(
+            data = filter(tree.metrics, startsWith(metric, 'C'), transformation %>% endsWith('_sim')),
+            size = 1.2,
+            linetype = 'dashed',
+            position=position_jitter(w=0.02, h=0.0001)
+        ) +
+        labs(
+            x = 'minsplit',
+            col = 'Model'
+        ) +
+        # scale_alpha_manual(
+        #     labels = c('TPR', 'Cummulative TPR'),
+        #     breaks = c('TPR', 'CTPR'),
+        #     values = c(0.6, 1.0)
+        # ) +
+        # scale_size_manual(
+        #     breaks = c('TPR', 'CTPR'),
+        #     values = c(0.3, 1.2)
+        # ) + 
+        scale_color_manual(
+            breaks = c(
+                'gini', 
+                'gini_sim', 
+                'info',
+                'info_sim'
+            ), 
+            labels = c(
+                'Gini', 
+                'Gini (Simplified)', 
+                'Information',
+                'Information (Simplified)'
+            ),
+            values=c(
+                '#007d80', 
+                '#7ed7d9', 
+                '#0050bf',
+                '#858eed'
+            )
+        ) +
+        geom_text(
+            data = BEST.MODEL,
+            aes(
+                x = split, 
+                y = value,
+                col = transformation,
+                label = paste0((value * 100) %>% round(1), '%'),
+            ),
+            hjust = -0.05, 
+            vjust =  1.55, 
+            text=element_text(size=11)
+        ) +
+        geom_vline(
+            data = BEST.MODEL,
+            aes(xintercept = split),
+            col = 'black',
+            linetype = 'dotted'
+        ) +
+        # geom_text(
+        #     data = BEST.MODEL,
+        #     aes(
+        #         x = split, 
+        #         y = 0.847,
+        #         label = paste0('minsplit = ', split)
+        #     ),
+        #     col = 'black',
+        #     hjust = 1.15, 
+        #     vjust = 0.5, 
+        #     text=element_text(size=11)
+        # ) +
+        theme(
+            # legend.position = 'inside', 
+            # legend.direction = 'horizontal',
+            legend.box = 'horizontal',
+            legend.box.just = 'right',
+            legend.justification = c('right', 'bottom'),
+            legend.background = element_blank()
+        )) %>%
+        .save_and_display(
+            'Performance of Decision Tree: (FPR, TPR) vs minsplit',
+            width = 960, height = 960,
+            '../figures/32.DecisionTree.pdf'
+        )
+```
+
+```{r}
+tree.metrics %>% 
+    filter(metric == 'TPR') %>% slice_max(value, n = 1)
+
+tree.best.model.1 <- tree.model.gini_sim(params = list(minsplit = 50))(df, df)$model
+tree.best.model.2 <- tree.model.gini_sim(params = list(minsplit = 60))(df, df)$model
+
+# pdf('../figures/32.DecisionTree-45.pdf')
+tree.best.model.1 %>% 
+    rpart.plot(
+        type = 4, extra = 2, roundint=F,
+        # width = 960, height = 640,
+        xpd = T, cex = 1.6,
+        main = paste0('Decision Tree, minsplit = 45')
+    )
+
+# pdf('../figures/32.DecisionTree-60.pdf')
+tree.best.model.2 %>% 
+    rpart.plot(
+        type = 4, extra = 2, roundint=F,
+        # width = 960, height = 640,
+        xpd = T, cex = 1.6,
+        main = paste0('Decision Tree, minsplit = 60')
+    )
+
+# dev.off()
+```
+
+# Choosing the best model
+
+```{r}
+final.knn.model <- knn3(
+    disease ~ 
+        sex + chest.pain + rest.ecg + heart.rate + 
+        angina + st.depression + vessels + blood.disorder, 
+    df_knn_scaled_boxcox,
+    k = 19
+)
+
+final.lr.model <- glm(
+    disease ~ ., df, 
+    family = 'binomial'
+)
+
+final.tree.small.model <- rpart(
+    disease ~ ., df,
+    control = rpart.control(minsplit = 30)
+)
+
+final.tree.medium.model <- rpart(
+    disease ~ ., df,
+    control = rpart.control(minsplit = 45)
+)
+```
+
+```{r}
+.predict.final <- 
+    \(model, data) .all(model, data)
+
+.perf.final <- 
+    \(pred, measure, x.measure=NULL) performance(pred, measure = measure, x.measure = x.measure)
+
+.final.perfs <- function(preds, y.measure, x.measure = '') {
+    seq_along(preds) %>%
+        lapply(function(i) {
+            perf <- .perf.final %>% do.call(c(
+                preds[[i]],
+                list(
+                    measure = y.measure, 
+                    x.measure = if (x.measure == '') 'cutoff' else x.measure
+                )
+            ))
+            
+            ys <- perf@y.values[[1]]
+            df <- data.frame(matrix(nrow = length(ys), ncol = 0))
+            df[y.measure] <- ys
+            if (x.measure != '') 
+                df[x.measure] <- perf@x.values[[1]]
+            df['Name'] <- names(preds[i])
+            df
+        }) %>%
+        Reduce(\(df1, df2) full_join(df1, df2), .)
+}
+
+final.preds <- list(
+    knn = final.knn.model %>% 
+        predict(df_knn_scaled_boxcox, type = 'prob') %>% (\(x) x[,2]) %>% 
+        prediction(df_knn_scaled_boxcox$disease),
+    
+    lr = final.lr.model %>% 
+        predict(df, type = 'response') %>%
+        prediction(df_knn_scaled_boxcox$disease),
+    
+    tree.small = final.tree.small.model %>% 
+        predict(df, type = 'prob') %>% (\(x) x[,2]) %>%
+        prediction(df_knn_scaled_boxcox$disease),
+    
+    tree.medium = final.tree.medium.model %>% 
+        predict(df, type = 'prob') %>% (\(x) x[,2]) %>%
+        prediction(df_knn_scaled_boxcox$disease)
+)
+```
+
+```{r}           
+final.ROC.df <- final.preds %>% .final.perfs('tpr', 'fpr')
+final.ROC.df 
+final.AUC.df <- final.preds %>% .final.perfs('auc')
+final.AUC.df
+
+(ggplot() +
+    facet_wrap(~ Name) +
+    geom_area(
+        data = final.ROC.df, 
+        mapping = aes(x = fpr, y = tpr, col = Name, fill = Name), 
+        size = 1.2, alpha = .3,
+        linetype = 'twodash'
+    ) +
+    geom_text(
+        data = final.AUC.df,
+        mapping = aes(
+            x = 0.5,
+            y = 0.5,
+            label = paste0('AUC = ', auc %>% round(4)),
+            col = Name
+        ),
+        size = 7,
+        hjust =  .5,
+        vjust =  .75
+    ) +
+        labs(
+            x = 'FPR',
+            y = 'TPR',
+            color = 'Model',
+            fill = 'Model'
+        ) +
+        scale_color_manual(
+            breaks = c( 
+                'knn', 'lr', 
+                'tree.medium',  'tree.small' 
+            ), 
+            labels = c( 
+                '19-NN (Box-Cox + Simplified)', 'Logistic Regression',
+                'Decision Tree (minsplit = 30)',  'Decision Tree (minsplit = 45)'
+            ),
+            values=c(
+                '#ee3532', '#4a2574',
+                '#007d80',  '#0050bf'
+            )
+        ) +
+        scale_fill_manual(
+            breaks = c( 
+                'knn', 'lr', 
+                'tree.medium',  'tree.small' 
+            ), 
+            labels = c( 
+                '19-NN (Box-Cox + Simplified)', 'Logistic Regression',
+                'Decision Tree (minsplit = 30)',  'Decision Tree (minsplit = 45)'
+            ),
+            values=c(
+                '#ee3532', '#4a2574',
+                '#007d80',  '#0050bf'
+            )
+        ) +
+        theme(
+            # legend.position = 'inside', 
+            # legend.direction = 'horizontal',
+            legend.box = 'horizontal',
+            legend.box.just = 'right',
+            legend.justification = c('right', 'bottom'),
+            legend.background = element_blank(),
+            strip.background = element_blank(),
+            strip.text.x = element_blank()
+        )
+) %>%
+        .save_and_display(
+            'ROC curve and AUC for each model',
+            width = 960, height = 640,
+            '../figures/40.ROCs.pdf'
+        )
+    
+```
+
+```{r}
+final.TPR.df <- final.preds %>% .final.perfs('tpr', 'cutoff')
+final.TPR.df 
+final.precision.df <- final.preds %>% .final.perfs('prec', 'cutoff')
+final.precision.df
+
+final.TPR.precision.df <- inner_join(final.TPR.df, final.precision.df) %>% 
+    pivot_longer(cols = c('tpr', 'prec'), names_to = 'metric', values_to = 'values')
+
+final.TPR.precision.50 <- final.TPR.precision.df %>%
+    filter(0 <= cutoff, cutoff <= 1) %>%
+    filter(0 <= values, values <= 1) %>%
+    group_by(Name, metric) %>%
+    summarise(value_50 = approxfun(cutoff, values, n = 100)(.5))
+
+final.TPR.precision.75 <- final.TPR.precision.df %>%
+    filter(0 <= cutoff, cutoff <= 1) %>%
+    filter(0 <= values, values <= 1) %>%
+    group_by(Name, metric) %>%
+    summarise(value_75 = approxfun(cutoff, values, n = 100)(.75))
+
+(final.TPR.precision.df %>% ggplot() +
+    facet_wrap(~ Name) +
+    geom_line(
+        mapping = aes(x = cutoff, y = values, col = Name, linetype = metric),
+        size = 1, alpha = .7
+    ) +
+    geom_vline(
+        xintercept = .5,
+        linetype = 'dotted',
+        size = .5
+    ) +
+    geom_point(
+        data = final.TPR.precision.50,
+        mapping = aes(x = 0.5, y = value_50, col = Name),
+        size = 2
+    ) + 
+    geom_text(
+        data = final.TPR.precision.50,
+        mapping = aes(
+            x = 0.5, y = value_50, col = Name,
+            label = paste0(metric, ' = ', value_50 %>% round(3)),
+            hjust = metric %>% sapply(\(metric) if (metric == 'tpr') -0.1 else 1.1)
+        ),
+        vjust = -0.2
+    ) + 
+        scale_color_manual(
+            breaks = c( 
+                'knn', 'lr', 
+                'tree.medium',  'tree.small' 
+            ), 
+            labels = c( 
+                '19-NN', 'Logistic Regression',
+                'Decision Tree (minsplit = 30)',  'Decision Tree (minsplit = 45)'
+            ),
+            values=c(
+                '#ee3532', '#4a2574',
+                '#007d80',  '#0050bf'
+            )
+        ) +
+        scale_linetype_manual(
+            breaks = c( 'tpr', 'prec' ),
+            labels = c( 'Recall (TPR)', 'Precision' ),
+            values=c( 'solid', 'dashed' )
+        ) +
+        theme(
+            # legend.position = 'inside', 
+            # legend.direction = 'horizontal',
+            # legend.box = 'horizontal',
+            # legend.box.just = 'right',
+            # legend.justification = c('right', 'bottom'),
+            legend.background = element_blank(),
+            strip.background = element_blank(),
+            strip.text.x = element_blank()
+        )
+) %>%
+        .save_and_display(
+            'Precision-Recall vs Cutoff',
+            width = 960, height = 640,
+            '../figures/40.TPRs.pdf'
+        )
+    
+```
+
+```{r}
+final.prec.recall.df <- final.preds %>% .final.perfs('prec', 'tpr')
+final.prec.recall.df
+
+final.prec.recall.thresholds.df <- full_join(
+    final.TPR.precision.50 %>% 
+        pivot_wider(names_from = 'metric', values_from = 'value_50') %>%
+        mutate(threshold = 0.5),
+    final.TPR.precision.75 %>% 
+        pivot_wider(names_from = 'metric', values_from = 'value_75') %>%
+        mutate(threshold = 0.75),
+)
+
+(final.prec.recall.df %>% ggplot() +
+    # facet_wrap(~ Name) +
+    geom_line(
+        mapping = aes(x = tpr, y = prec, col = Name),
+        size = 1, alpha = .7
+    ) +
+    geom_point(
+        data = final.prec.recall.thresholds.df,
+        mapping = aes(
+            x = tpr, y = prec, col = Name, fill = Name,
+            pch = as.factor(threshold)
+        ),
+        size = 5,
+        alpha = 0.5,
+    ) + 
+        labs(
+            x = 'Recall (TPR)',
+            y = 'Precision',
+            shape = 'Threshold'
+        ) +
+        scale_shape_manual(
+            breaks = c('0.5', '0.75'),
+            labels = c(
+                TeX('\\delta = 0.5'),
+                TeX('\\delta = 0.75')
+            ),
+            values = c(21, 22)
+        ) +
+        scale_color_manual(
+            breaks = c( 
+                'knn', 'lr', 
+                'tree.medium',  'tree.small' 
+            ), 
+            labels = c( 
+                '19-NN', 'Logistic Regression',
+                'Decision Tree (minsplit = 30)',  'Decision Tree (minsplit = 45)'
+            ),
+            values=c(
+                '#ee3532', '#4a2574',
+                '#007d80',  '#0050bf'
+            )
+        ) +
+        scale_fill_manual(
+            breaks = c( 
+                'knn', 'lr', 
+                'tree.medium',  'tree.small' 
+            ), 
+            labels = c( 
+                '19-NN', 'Logistic Regression',
+                'Decision Tree (minsplit = 30)',  'Decision Tree (minsplit = 45)'
+            ),
+            values=c(
+                '#ee3532', '#4a2574',
+                '#007d80',  '#0050bf'
+            )
+        ) +
+        theme(
+            # legend.position = 'inside', 
+            # legend.direction = 'horizontal',
+            # legend.box = 'horizontal',
+            # legend.box.just = 'right',
+            # legend.justification = c('right', 'bottom'),
+            legend.background = element_blank(),
+            strip.background = element_blank(),
+            strip.text.x = element_blank()
+        )
+) %>%
+        .save_and_display(
+            'Precision - Recall curve',
+            width = 960, height = 640,
+            '../figures/40.Precision-Recall.pdf'
+        )
+    
+```
+
+
+
+
+
